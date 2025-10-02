@@ -4,81 +4,117 @@ import subprocess
 import csv
 import re
 import textwrap
+from pathlib import Path
 
-# Function to clear the screen
+# -------------------------
+# Helpers for cross-platform paths
+# -------------------------
+
+def slugify(s: str, max_len: int = 255) -> str:
+    """Make a safe string for filenames."""
+    if s is None:
+        return ""
+    s = str(s).strip().replace(" ", "_")
+    s = re.sub(r"[^A-Za-z0-9._-]", "", s)
+    return s[:max_len]
+
+def get_ips_base_dir() -> Path:
+    """
+    Determine writable base dir for results.
+    Order:
+      1. env var IPS_BASE_DIR
+      2. $XDG_DATA_HOME/ips
+      3. ~/.local/share/ips
+    """
+    env = os.getenv("IPS_BASE_DIR")
+    if env:
+        return Path(env).expanduser()
+
+    xdg = os.getenv("XDG_DATA_HOME")
+    if xdg:
+        return Path(xdg).expanduser() / "ips"
+
+    return Path.home() / ".local" / "share" / "ips"
+
+def prepare_paths(country_file_path: str, entry_number_country, country_name: str, owner_name: str):
+    """Return dict of safe paths for iplist, scan, and filtered results."""
+    base = get_ips_base_dir()
+    ip_dir = base / "iplists"
+    results_dir = base / "results" / slugify(country_name)
+
+    ip_dir.mkdir(parents=True, exist_ok=True)
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    list_name = f"{Path(country_file_path).stem}_{entry_number_country}"
+    safe_owner = slugify(owner_name)
+
+    filename = ip_dir / f"{list_name}_iplist.txt"
+    output_filename = ip_dir / f"{list_name}_scan.txt"
+    filtered_output_filename = results_dir / f"{list_name}_{safe_owner}.txt"
+
+    return {
+        "list_name": list_name,
+        "filename": str(filename),
+        "output_filename": str(output_filename),
+        "filtered_output_filename": str(filtered_output_filename),
+    }
+
+# -------------------------
+# Existing functions
+# -------------------------
+
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
 
-# Function to save IPs to a file
 def save_to_file(ip_list, filename):
     with open(filename, 'w') as file:
         for ip in ip_list:
             file.write(f"{ip}\n")
 
 def ip_range(start_ip, end_ip):
-    # Convert IP strings to integers for easier manipulation
     start = list(map(int, start_ip.split('.')))
     end = list(map(int, end_ip.split('.')))
-
-    # Calculate total number of IPs in the range
     total_ips = 1
     for i in range(4):
         total_ips *= (end[i] - start[i] + 1)
 
-    # Generate IPs within the range
     ips = []
     for _ in range(total_ips):
         ip = '.'.join(map(str, start))
         ips.append(ip)
-
         start[3] += 1
         for i in range(3, 0, -1):
             if start[i] > end[i]:
                 start[i] = 0
                 start[i - 1] += 1
-
     return ips
 
 def filter_open_ports(input_file, output_file):
     with open(input_file, 'r') as infile, open(output_file, 'w') as outfile:
         for line in infile:
-            # Extract the host and ports section
             host_match = re.match(r'Host: ([\d\.]+) \((.*?)\)\s+Ports: (.*)', line)
             if host_match:
                 ip = host_match.group(1)
                 host_name = host_match.group(2)
                 ports_info = host_match.group(3)
-
-                # Process ports to keep only open ones
                 open_ports = []
                 ports = ports_info.split(', ')
                 for port in ports:
                     port_info = port.split('/')
                     if port_info[1] == 'open':
                         open_ports.append(f"{port_info[0]}/open")
-
                 if open_ports:
-                    # Write formatted line to the output file
                     open_ports_str = ', '.join(open_ports)
                     outfile.write(f"{ip} ({host_name}) {open_ports_str}\n")
 
 def display_all_countries():
     countries_file = 'countries.csv'
     df = pd.read_csv(countries_file, header=None)
-    
-    # Add a new column 'Entry Number' starting from 0
     df.insert(0, 'Entry Number', df.index)
-
-    # Define column width
     column_width = 30
-
-    # Define the number of columns to display
     num_columns = 5
+    num_rows = -(-len(df) // num_columns)
 
-    # Calculate the number of rows required
-    num_rows = -(-len(df) // num_columns)  # Ceiling division
-
-    # Format the output
     lines = []
     for row in range(num_rows):
         line_parts = []
@@ -89,15 +125,16 @@ def display_all_countries():
                 country_name = df.iloc[index, 1]
                 line_parts.append(f"{entry_number:3d}: {country_name.ljust(column_width)}")
             else:
-                line_parts.append(" " * column_width)  # Placeholder for empty spaces
+                line_parts.append(" " * column_width)
         lines.append("".join(line_parts))
 
-    # Print the formatted output
     print("\nCountries:")
     for line in lines:
         print(line)
 
-# Define the mapping from entry numbers to country CSV files
+# -------------------------
+# Country mapping
+# -------------------------
 country_names = {
     # Add all mappings here
     0: 'countries/af.csv',  # Afghanistan
@@ -316,84 +353,58 @@ country_names = {
     213: 'countries/zm.csv'  # Zambia
 }
 
+
+# -------------------------
+# Main logic
+# -------------------------
 clear_screen()
-# Replace 'your_file.csv' with the path to your CSV file
 csv_file_path = 'countries.csv'
-
-# Read the CSV file into a DataFrame
 df = pd.read_csv(csv_file_path, header=None)
-
-# Add a new column 'Entry Number' starting from 0
 df.insert(0, 'Entry Number', df.index)
 
-# Display the full list of entries without DataFrame index numbers
 display_all_countries()
 print("\n")
 
-# Prompt the user to enter a number
 while True:
     try:
         entry_number = int(input("Type an entry number: "))
-        
-        # Check if the number is within the valid range
         if 0 <= entry_number < len(df):
-            # Clear the screen
             clear_screen()
-            
-            # Display only the row corresponding to the entered number without DataFrame index numbers
             selected_entry = df[df['Entry Number'] == entry_number]
             print("Selected Entry:")
             print(selected_entry.to_string(index=False))
-            
-            # Get the corresponding country file path and name
+
             country_file_path = country_names.get(entry_number)
             if country_file_path:
-                # Extract country name from the file path
                 country_name = os.path.basename(country_file_path).split('.')[0]
-                
-                # Load the country-specific CSV file
                 country_df = pd.read_csv(country_file_path)
                 country_df.columns = ["From IP", "To IP", "Total IP's", "Assign Date", "Owner"]
-                
-                # Replace DataFrame index numbers with entry numbers
                 country_df.insert(0, 'Entry Number', country_df.index)
-                
                 pd.set_option('display.max_rows', None)
-                
+
                 print("\nCountry Data:")
                 print(country_df.to_string(index=False))
                 print()
-                
-                # Prompt user to enter a number from the country data
+
                 while True:
                     try:
                         entry_number_country = int(input("Type an entry number to start the scan: "))
-                        
                         if 0 <= entry_number_country < len(country_df):
-                            # Get the selected row
                             selected_country_entry = country_df[country_df['Entry Number'] == entry_number_country]
                             if not selected_country_entry.empty:
-                                # Extract IP range from the selected entry
                                 start_ip = selected_country_entry['From IP'].values[0]
                                 end_ip = selected_country_entry['To IP'].values[0]
-                                owner_name = selected_country_entry['Owner'].values[0].replace(' ', '_')  # Replace spaces with underscores for filenames
-                                
-                                # Generate the list of IPs
+                                owner_name = selected_country_entry['Owner'].values[0]
+
                                 ip_list = ip_range(start_ip, end_ip)
-                                
-                                # Define filenames
-                                list_name = f"{country_file_path.split('/')[-1].split('.')[0]}_{entry_number_country}"
-                                filename = f"/opt/ips/{list_name}_iplist.txt"
-                                output_filename = f"/opt/ips/{list_name}_scan.txt"
-                                filtered_output_filename = f"/opt/ips/results/{country_name}/{list_name}_{owner_name}.txt"
-                                
-                                # Ensure the country directory exists
-                                os.makedirs(os.path.dirname(filtered_output_filename), exist_ok=True)
-                                
-                                # Save IPs to the specified text file
+
+                                paths = prepare_paths(country_file_path, entry_number_country, country_name, owner_name)
+                                filename = paths["filename"]
+                                output_filename = paths["output_filename"]
+                                filtered_output_filename = paths["filtered_output_filename"]
+
                                 save_to_file(ip_list, filename)
-                                
-                                # Prepare and execute the nmap command
+
                                 clear_screen()
                                 ports = input("Enter the ports to scan (comma-separated ex: 80,443,21...): ")
                                 clear_screen()
@@ -402,32 +413,26 @@ while True:
                                 print("Command: ", command)
                                 print()
                                 subprocess.run(command, shell=True, check=True)
-                                
-                                # Filter the output to include only lines with '/open/'
+
                                 filter_open_ports(output_filename, filtered_output_filename)
-                                
-                                # Cleanup
+
                                 os.remove(filename)
                                 os.remove(output_filename)
-                                
+
                                 clear_screen()
                                 print()
-                                print(f"Scan successful. All results with open ports saved to '{filtered_output_filename}'")
-                                print()                      
-                                #print(df.to_string(index=False))
+                                print(f"Scan successful. Results saved to '{filtered_output_filename}'")
+                                print()
                                 display_all_countries()
-                                filepath = os.path.join('.', filtered_output_filename)
-                                subprocess.run(["xdg-open", filepath])
-                
-                            break  # Exit the loop after processing
+                                subprocess.run(["xdg-open", filtered_output_filename])
+
+                            break
                         else:
                             print(f"Please enter a number between 0 and {len(country_df) - 1}.")
                     except ValueError:
                         print("Please enter a valid number.")
-                
             else:
                 print("No country file found for this entry.")
-            
         else:
             print(f"Please enter a number between 0 and {len(df) - 1}.")
     except ValueError:
